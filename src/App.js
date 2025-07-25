@@ -1,20 +1,29 @@
 import React, { useState } from "react";
 import axios from "axios";
-import "./App.css";
 
-const TMDB_API_KEY = "3bd05e94810ab2aa2cb507b16ee838e7"; // Replace this with your TMDb API key
+const TMDB_API_KEY = "3bd05e94810ab2aa2cb507b16ee838e7";
+
+const sexualKeywords = [
+  "sex", "sexual", "nudity", "bedroom", "intimate", "seduce", "erotic",
+  "explicit", "adult", "affair", "strip", "provocative", "rape",
+  "orgy", "orgasm", "seduction"
+];
+
+const adultRatings = ["TV-MA", "R", "NC-17", "18+", "X"];
 
 const App = () => {
   const [input, setInput] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [selectedResult, setSelectedResult] = useState(null);
   const [episodeWarnings, setEpisodeWarnings] = useState([]);
+  const [streamingPlatforms, setStreamingPlatforms] = useState([]);
   const [darkMode, setDarkMode] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const handleSearch = async () => {
     setSelectedResult(null);
     setEpisodeWarnings([]);
+    setStreamingPlatforms([]);
     if (!input) return;
     try {
       setLoading(true);
@@ -36,6 +45,7 @@ const App = () => {
   const handleSelectResult = async (item) => {
     setSelectedResult(null);
     setEpisodeWarnings([]);
+    setStreamingPlatforms([]);
     try {
       setLoading(true);
       const isTV = item.media_type === "tv";
@@ -44,38 +54,63 @@ const App = () => {
       const details = await axios.get(
         `https://api.themoviedb.org/3/${isTV ? "tv" : "movie"}/${id}?api_key=${TMDB_API_KEY}`
       );
-
       const metadata = details.data;
-      const description =
-        metadata.overview?.toLowerCase() || "";
 
-      const sexualKeywords = [
-        "nudity",
-        "sexual",
-        "sex scene",
-        "intercourse",
-        "adult",
-        "intimate",
-        "provocative",
-        "bedroom",
-        "explicit",
-        "graphic"
-      ];
-
-      const hasSexualContent = sexualKeywords.some((kw) =>
-        description.includes(kw)
+      // Fetch content ratings for TV shows or movies
+      const ratingsRes = await axios.get(
+        `https://api.themoviedb.org/3/${isTV ? "tv" : "movie"}/${id}/content_ratings?api_key=${TMDB_API_KEY}`
       );
+      const ratings = ratingsRes.data.results || [];
+
+      // Check for adult ratings
+      const hasAdultRating = ratings.some((r) =>
+        adultRatings.includes(r.rating)
+      );
+
+      // Check overview keywords
+      const overviewText = (metadata.overview || "").toLowerCase();
+      const overviewHasSexualContent = sexualKeywords.some((kw) =>
+        overviewText.includes(kw)
+      );
+
+      // Combine
+      let hasSexualContent = hasAdultRating || overviewHasSexualContent;
+
+      let episodeWarningsArr = [];
+      if (isTV) {
+        episodeWarningsArr = await fetchEpisodeWarnings(id, metadata.number_of_seasons);
+        // If any episode has sexual content, mark overall as sexual content
+        if (episodeWarningsArr.length > 0) {
+          hasSexualContent = true;
+        }
+      }
+
+      // Fetch watch providers info
+      const providersRes = await axios.get(
+        `https://api.themoviedb.org/3/${isTV ? "tv" : "movie"}/${id}/watch/providers?api_key=${TMDB_API_KEY}`
+      );
+
+      const providersData = providersRes.data.results || {};
+
+      // Change country code as needed, e.g. "US", "AU"
+      const countryCode = "US";
+
+      const countryProviders = providersData[countryCode];
+      let streamingList = [];
+      if (countryProviders && countryProviders.flatrate) {
+        streamingList = countryProviders.flatrate.map(p => p.provider_name);
+      }
+
+      setStreamingPlatforms(streamingList);
 
       setSelectedResult({
         ...metadata,
         type: isTV ? "tv" : "movie",
-        sexualContent: hasSexualContent
+        sexualContent: hasSexualContent,
+        ratings,
       });
 
-      if (isTV) {
-        const warnings = await fetchEpisodeWarnings(id, metadata.number_of_seasons);
-        setEpisodeWarnings(warnings);
-      }
+      setEpisodeWarnings(episodeWarningsArr);
     } catch (error) {
       console.error("Details fetch error:", error);
       alert("Failed to fetch details");
@@ -94,22 +129,30 @@ const App = () => {
         const episodes = seasonRes.data.episodes;
 
         episodes.forEach((ep) => {
-          const desc = ep.overview?.toLowerCase() || "";
-          const flag = /sex|nudity|adult|explicit/i.test(desc);
+          const desc = (ep.overview || "").toLowerCase();
+          const flag = sexualKeywords.some((kw) => desc.includes(kw));
           if (flag) {
             warnings.push({
               season,
               episode: ep.episode_number,
               name: ep.name,
-              overview: ep.overview
+              overview: ep.overview,
             });
           }
         });
       } catch (err) {
-        console.warn(`Failed to fetch season ${season}`);
+        console.warn(`Failed to fetch season ${season}`, err);
       }
     }
     return warnings;
+  };
+
+  const getOfficialRatingsText = () => {
+    if (!selectedResult || !selectedResult.ratings) return null;
+    if (selectedResult.ratings.length === 0) return "No official rating found";
+    return selectedResult.ratings
+      .map((r) => `${r.iso_3166_1}: ${r.rating}`)
+      .join(" | ");
   };
 
   return (
@@ -119,12 +162,15 @@ const App = () => {
         fontFamily: "Arial",
         background: darkMode ? "#1e1e1e" : "#f5f5f5",
         color: darkMode ? "#f5f5f5" : "#1e1e1e",
-        minHeight: "100vh"
+        minHeight: "100vh",
       }}
     >
       <h1>🎬 Family-Safe Content Checker</h1>
 
-      <button onClick={() => setDarkMode(!darkMode)} style={{ marginBottom: "1rem" }}>
+      <button
+        onClick={() => setDarkMode(!darkMode)}
+        style={{ marginBottom: "1rem" }}
+      >
         {darkMode ? "☀️ Light Mode" : "🌙 Dark Mode"}
       </button>
 
@@ -154,7 +200,7 @@ const App = () => {
                   padding: "0.5rem",
                   border: "1px solid",
                   marginBottom: "0.5rem",
-                  background: darkMode ? "#333" : "#fff"
+                  background: darkMode ? "#333" : "#fff",
                 }}
               >
                 {item.name || item.title} ({item.media_type})
@@ -167,7 +213,14 @@ const App = () => {
       {selectedResult && (
         <div style={{ marginTop: "2rem" }}>
           <h2>{selectedResult.name || selectedResult.title}</h2>
-          <p><strong>Overview:</strong> {selectedResult.overview}</p>
+          <p>
+            <strong>Overview:</strong> {selectedResult.overview}
+          </p>
+
+          <p>
+            <strong>Official Ratings:</strong>{" "}
+            <em>{getOfficialRatingsText() || "N/A"}</em>
+          </p>
 
           <p>
             <strong>Family Safety:</strong>{" "}
@@ -182,12 +235,24 @@ const App = () => {
             )}
           </p>
 
+          {streamingPlatforms.length > 0 && (
+            <p>
+              <strong>Available on:</strong> {streamingPlatforms.join(", ")}
+            </p>
+          )}
+
           {episodeWarnings.length > 0 && (
             <div style={{ marginTop: "1rem" }}>
               <h3>⚠️ Episode Warnings</h3>
               {episodeWarnings.map((ep, index) => (
-                <div key={index} style={{ borderBottom: "1px solid gray", padding: "0.5rem 0" }}>
-                  <strong>Season {ep.season}, Episode {ep.episode}:</strong> {ep.name}
+                <div
+                  key={index}
+                  style={{ borderBottom: "1px solid gray", padding: "0.5rem 0" }}
+                >
+                  <strong>
+                    Season {ep.season}, Episode {ep.episode}:
+                  </strong>{" "}
+                  {ep.name}
                   <p>{ep.overview}</p>
                 </div>
               ))}
